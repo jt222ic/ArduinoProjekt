@@ -1,0 +1,224 @@
+#include <ESP8266WiFi.h>
+#include <EEPROM.h>
+#include <DNSServer.h>
+#include <ArduinoOTA.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
+#include <time.h>
+ 
+// ---------- CONFIG ----------
+#define AP_SSID "area51-setup"     konfigurera Access Point till mcu
+#define AP_PASS "12345678"
+ 
+#define ADC_PIN A0
+#define ADC_MAX 1023              analog to digital konverterer Esp8266 tillämpar 10 bitar = 1023 
+#define ADC_REF_V 2.98f           Referens volt är 2.98v  , 3.3v eller 5 v för arduino uno
+ 
+#define SAMPLE_MS 200                 200 tester
+#define HISTORY_LEN 300                   hu många tester du kan lagra n
+ 
+// ---------- STATE ----------
+AsyncWebServer server(80);                länka server port 80 (internet notifikation)
+DNSServer dns;                               domän network server 
+ 
+float vHist[HISTORY_LEN];                           
+uint32_t tHist[HISTORY_LEN];
+int head = 0, count = 0;
+ 
+float voltage = 0;
+float voltageFilt = 0;
+int adcVal = 0;
+unsigned long lastSample = 0;
+ 
+bool staMode = false;
+ 
+// ---------- EEPROM ----------
+#define EEPROM_SIZE 512                                      eeprom för att spara historik wifi och lösenord, där vi behöver inte logga in igen
+#define MAGIC 0xA51A51A5
+ 
+bool loadCreds(String &ssid, String &pass){
+  uint32_t m; EEPROM.get(0,m);
+  if(m!=MAGIC) return false;
+ 
+  char s[33], p[65];
+  for(int i=0;i<32;i++) s[i]=EEPROM.read(4+i);
+  for(int i=0;i<64;i++) p[i]=EEPROM.read(36+i);
+  s[32]=0; p[64]=0;
+ 
+  ssid=String(s); pass=String(p);
+  ssid.trim();
+  return ssid.length()>0;
+}
+ 
+void saveCreds(String ssid,String pass){                             spara crediential Wifi
+  EEPROM.put(0,MAGIC);
+  for(int i=0;i<32;i++) EEPROM.write(4+i, i<ssid.length()?ssid[i]:0);
+  for(int i=0;i<64;i++) EEPROM.write(36+i, i<pass.length()?pass[i]:0);
+  EEPROM.commit();
+}
+ 
+void clearCreds(){
+  uint32_t z=0;
+  EEPROM.put(0,z);
+  EEPROM.commit();
+}
+ 
+// ---------- ADC ----------
+float adcToVolt(int a){
+  return ((float)a / ADC_MAX) * ADC_REF_V;                             Volt reference / 1024 bitar * reference Volt för att få total volt            
+}
+ 
+void sample(){
+  if(millis()-lastSample < SAMPLE_MS) return;             millisekunds räkning och senaste är mindre än antallet
+  lastSample = millis();                                    annars adderas senaste i sekunder
+ 
+  long acc=0;
+  for(int i=0;i<8;i++){
+    acc += analogRead(ADC_PIN);
+    delayMicroseconds(200);
+  }
+ 
+  adcVal = acc/8;                                      Uträkning  a+a+a /total A = medelvärde
+ 
+  float v = adcToVolt(adcVal);
+ 
+  // Lågpassfilter för jämnare värde
+  if(voltageFilt == 0) voltageFilt = v;              filter  justering = manipulation av data, inte den tydligaste rådata.
+  voltageFilt = voltageFilt*0.90f + v*0.10f;
+ 
+  voltage = voltageFilt;
+ 
+  vHist[head]=voltage;
+  tHist[head]=millis();                                           //header cost?
+  head=(head+1)%HISTORY_LEN;
+  if(count<HISTORY_LEN) count++;
+}
+ 
+// ---------- API ----------
+void apiState(AsyncWebServerRequest *req){                                     API sync  returnera ip adress,wifi status, rss, mode: st och ap
+  bool ok = WiFi.status()==WL_CONNECTED;
+ 
+  AsyncResponseStream *res = req->beginResponseStream("application/json");
+  res->printf("{\"ok\":true,\"mode\":\"%s\",\"ip\":\"%s\",\"wifi\":\"%s\",\"rssi\":%d,\"voltage\":%.3f,\"adc\":%d}",
+    staMode?"STA":"AP",
+    (staMode?WiFi.localIP().toString():WiFi.softAPIP().toString()).c_str(),
+    ok?"connected":"disconnected",
+    ok?WiFi.RSSI():0,
+    voltage,
+    adcVal
+  );
+  req->send(res);                                                             vhist = voltage history
+}                                                                             thist = time history
+ 
+// /api/voltage
+// - Utan since => hela historiken (bakåtkompatibelt)
+// - Med since=millis => bara nya samples
+
+void apiVoltage(AsyncWebServerRequest *req){    // api request  returnera json text
+  bool hasSince = req->hasParam("since");
+  uint32_t since = 0;
+  if(hasSince){
+    since = (uint32_t)req->getParam("since")->value().toInt();                     exempel: http://esp.local/api/voltage?since=5000
+  }
+  
+  AsyncResponseStream *res = req->beginResponseStream("application/json");
+  res->print("{\"ok\":true,\"samples\":[");
+ 
+  bool first = true;
+  int start=head-count; if(start<0) start+=HISTORY_LEN;
+ 
+  for(int i=0;i<count;i++){
+    int idx=(start+i)%HISTORY_LEN;
+    uint32_t t = tHist[idx];
+    if(hasSince && t <= since) continue;
+ 
+    if(!first) res->print(",");
+    first = false;
+ 
+    // 2–3 decimals räcker. Mindre payload => snabbare UI.
+    res->printf("{\"t\":%u,\"v\":%.3f}", (unsigned)t, vHist[idx]);
+  }
+ 
+  res->print("]}");
+  req->send(res);
+}
+ 
+// ---------- SETUP ----------
+void setup(){
+  Serial.begin(115200);
+  EEPROM.begin(EEPROM_SIZE);
+ 
+  if(!LittleFS.begin()){
+    Serial.println("LittleFS FAIL");
+  } else {
+    Serial.println("LittleFS OK");
+  }
+ 
+  String ssid,pass;
+ 
+  if(loadCreds(ssid,pass)){
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(),pass.c_str());
+ 
+    if(WiFi.waitForConnectResult()==WL_CONNECTED){
+      staMode=true;
+      Serial.println(WiFi.localIP());
+ 
+      server.serveStatic("/",LittleFS,"/").setDefaultFile("index.html");
+ 
+      server.on("/api/state",HTTP_GET,apiState);
+      server.on("/api/voltage",HTTP_GET,apiVoltage);
+ 
+      server.on("/api/resetwifi",HTTP_POST,[](AsyncWebServerRequest *r){
+        clearCreds();
+        r->send(200,"application/json","{\"ok\":true}");
+        delay(500);
+        ESP.restart();
+      });
+ 
+      ArduinoOTA.begin();
+      server.begin();
+      return;
+    }
+  }
+ 
+  // AP fallback
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID,AP_PASS);
+ 
+  dns.start(53,"*",WiFi.softAPIP());
+ 
+  server.on("/",HTTP_GET,[](AsyncWebServerRequest *r){
+    r->send(200,"text/html",
+      "<h2>Setup WiFi</h2>"
+      "<form method='POST' action='/save'>"
+      "SSID:<input name='s'><br>"
+      "PASS:<input name='p'><br>"
+      "<button>SAVE</button></form>");
+  });
+ 
+  server.on("/save",HTTP_POST,[](AsyncWebServerRequest *r){
+    String s=r->getParam("s",true)->value();
+    String p=r->getParam("p",true)->value();
+    saveCreds(s,p);
+    r->send(200,"text/html","Saved. Rebooting...");
+    delay(500);
+    ESP.restart();
+  });
+ 
+  server.begin();
+}
+ 
+// ---------- LOOP ----------
+void loop(){
+  sample();
+  if(staMode) ArduinoOTA.handle();
+  else dns.processNextRequest();
+}
+ 
+ 
+ 
+ Websocket realtids skickningar kommunikation (chatgpt)
+
+I^2C  SPI = kommunikations protokoll

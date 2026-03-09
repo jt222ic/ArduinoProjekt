@@ -1,0 +1,30 @@
+const int pwmPin = D1;
+ 
+void setup() {
+
+  pinMode(pwmPin, OUTPUT);
+
+}
+ 
+void loop() {
+
+  //analogWrite(pwmPin, 126);
+
+  for (int dutyCycle = 0; dutyCycle <= 255; dutyCycle++) {
+
+    analogWrite(pwmPin, dutyCycle);
+
+    delay(10);
+
+  }
+ 
+  for (int dutyCycle = 255; dutyCycle >= 0; dutyCycle--) {
+
+    analogWrite(pwmPin, dutyCycle);
+
+    delay(10);
+
+  }
+
+}
+ 
