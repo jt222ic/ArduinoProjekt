@@ -146,7 +146,7 @@ void apiVoltage(AsyncWebServerRequest *req){    // api request  returnera json t
  
 // ---------- SETUP ----------
 void setup(){
-  Serial.begin(115200);
+  Serial.begin(115200);                                       // FS = file system för att hantera JavaScript,index html sparas i flash.
   EEPROM.begin(EEPROM_SIZE);
  
   if(!LittleFS.begin()){
@@ -177,13 +177,13 @@ void setup(){
         ESP.restart();
       });
  
-      ArduinoOTA.begin();
+      ArduinoOTA.begin();          ArduinoOTA stands for Arduino Over-The-Air.              AP fall back never runs because of return
       server.begin();
       return;
     }
   }
  
-  // AP fallback
+  // AP fallback                                                    OM wifi misslyckas eller credentials sparas ej körs AP fallback
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID,AP_PASS);
  
@@ -196,13 +196,14 @@ void setup(){
       "SSID:<input name='s'><br>"
       "PASS:<input name='p'><br>"
       "<button>SAVE</button></form>");
-  });
+  });                                                                               //Asyncweb = HTTP REQUEST
+                                                                                     // pointer R for callback function
  
-  server.on("/save",HTTP_POST,[](AsyncWebServerRequest *r){
-    String s=r->getParam("s",true)->value();
+  server.on("/save",HTTP_POST,[](AsyncWebServerRequest *r){                       // S = my wifi   p = my password
+    String s=r->getParam("s",true)->value();                                              
     String p=r->getParam("p",true)->value();
-    saveCreds(s,p);
-    r->send(200,"text/html","Saved. Rebooting...");
+    saveCreds(s,p);          
+    r->send(200,"text/html","Saved. Rebooting...");                                  // server sync creadandiatl S and P
     delay(500);
     ESP.restart();
   });
@@ -213,7 +214,7 @@ void setup(){
 // ---------- LOOP ----------
 void loop(){
   sample();
-  if(staMode) ArduinoOTA.handle();
+  if(staMode) ArduinoOTA.handle();                                                OM mcu uppkopplat till router = true, OTA = Over-The-Air updates.
   else dns.processNextRequest();
 }
  
