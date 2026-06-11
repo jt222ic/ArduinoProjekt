@@ -1,0 +1,43 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// Network credentials (your AP)
+const char* ssid = "ESP32_AP";
+const char* password = "12345678";
+
+// Create web server on port 80
+WebServer server(80);
+
+// Optional: define custom IP settings
+IPAddress local_ip(192,168,4,1);
+IPAddress gateway(192,168,4,1);
+IPAddress subnet(255,255,255,0);
+
+// Handle root URL
+void handleRoot() {
+  server.send(200, "text/html", "<h1>Hello from ESP32!</h1>");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configure IP (must be before softAP)
+  WiFi.softAPConfig(local_ip, gateway, subnet);
+
+  // Start Access Point
+  WiFi.softAP(ssid, password);
+
+  Serial.println("AP started");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Define routes
+  server.on("/", handleRoot);
+
+  // Start server
+  server.begin();
+}
+
+void loop() {
+  server.handleClient();
+}

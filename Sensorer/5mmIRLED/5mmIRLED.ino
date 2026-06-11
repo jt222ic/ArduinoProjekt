@@ -1,24 +1,28 @@
 // Pulse Monitor Test Script
-int sensorPin = A2;   // A2 pin
+int sensorPin = 4;   // A2 pin
 int irLedPin = 3; 
 double alpha = 0.75;
-int period = 10;
+int period = 100;
 double change = 0.0;
 double minval = 0.0;
 void setup ()
 {
    pinMode(irLedPin, OUTPUT);
    pinMode(sensorPin, INPUT);  
-   digitalWrite(irLedPin, HIGH);
+   //digitalWrite(irLedPin, HIGH);
   Serial.begin (9600);
 }
 void loop ()
 {
-    static double oldValue = 0;
-    static double oldChange = 0;
+    static double oldValue = 0;                         // IMPORTANT have correct pin , the receiver have a red led to indicate if it detects ir led
+    static double oldChange = 0;                       // it will have pulsating blinking,   the other problem is the digital read is too slow or 2 fast
+  // generate 38 kHz signal on pin 3 for 1 second
+  tone(irLedPin, 38000);  
+  delay(1000);
+  noTone(irLedPin);         // stop for 1 second
+  delay(1000);
   
-  
-    int rawValue = analogRead (sensorPin);
+  int rawValue = digitalRead (sensorPin);
    
     double value = alpha * oldValue + (1 - alpha) * rawValue;      // Apply exponential moving average (low-pass filter) to smooth the sensor readings
 // 'alpha' controls smoothing: higher alpha = smoother but slower response
